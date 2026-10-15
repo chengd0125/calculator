@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
+import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 
 let html5QrCode = null;
 
@@ -25,6 +26,8 @@ export default function NewOrderPage() {
   const [showDropdown,  setShowDropdown] = useState(false);
 
   const barcodeRef  = useRef();
+  const detectScan  = useBarcodeScanner();
+  const [scanMode, toggleScanMode] = useScanMode();
   const dropdownRef = useRef();
   const searchTimer = useRef();
 
@@ -62,25 +65,38 @@ export default function NewOrderPage() {
     }, 300);
   }
 
-  async function onBarcodeKey(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const query = barcode.trim();
-      if (!query) return;
-      try {
-        const res = await api.get('/products/search', { params: { q: query } });
-        setSearchResults(res.data);
-        if (res.data.length === 1) selectProduct(res.data[0]);
-        else if (res.data.length > 1) setShowDropdown(true);
-        else {
-          setShowDropdown(false);
-          setMsg({ type:'error', text:`❌ 找不到：${barcode}` });
-          setTimeout(() => setMsg(null), 3000);
-        }
-      } catch {
-        setMsg({ type:'error', text:`❌ 找不到：${barcode}` });
+  async function lookup(query) {
+    if (!query) return;
+    try {
+      const res = await api.get('/products/search', { params: { q: query } });
+      setSearchResults(res.data);
+      if (res.data.length === 1) selectProduct(res.data[0]);
+      else if (res.data.length > 1) setShowDropdown(true);
+      else {
+        setShowDropdown(false);
+        setMsg({ type:'error', text:`❌ 找不到：${query}` });
         setTimeout(() => setMsg(null), 3000);
       }
+    } catch {
+      setMsg({ type:'error', text:`❌ 找不到：${query}` });
+      setTimeout(() => setMsg(null), 3000);
+    }
+  }
+
+  function onBarcodeKey(e) {
+    const scanned = detectScan(e);
+    if (scanned) {
+      // 輸入法可能把注音寫回欄位，稍後以正確條碼覆寫
+      setTimeout(() => {
+        clearTimeout(searchTimer.current);
+        setBarcode(scanned);
+        lookup(scanned);
+      }, 30);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      lookup(barcode.trim());
     }
     if (e.key === 'Escape') setShowDropdown(false);
   }
@@ -285,9 +301,13 @@ export default function NewOrderPage() {
         <div className="scan-area">
           <label>🔍 掃描 / 輸入條碼或商品名稱</label>
           <div style={{position:'relative'}} ref={dropdownRef}>
-            <div style={{display:'flex', gap:8, alignItems:'center'}}>
-              <input ref={barcodeRef} type="text" value={barcode} onChange={onBarcodeChange} onKeyDown={onBarcodeKey} placeholder="輸入條碼或商品名稱..."
-                style={{flex:1, fontSize:14, padding:'7px 10px', border:'1px solid #d1d5db', borderRadius:8}} />
+            <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
+              <input ref={barcodeRef} {...scanInputProps(scanMode)} value={barcode} onChange={onBarcodeChange} onKeyDown={onBarcodeKey} placeholder={scanMode ? '掃描槍模式：直接掃描條碼（要打中文請關閉）' : '輸入條碼或商品名稱...'}
+                style={{flex:'1 1 220px', fontSize:14, padding:'7px 10px', border:'1px solid #d1d5db', borderRadius:8}} />
+              <button type="button" onClick={() => { toggleScanMode(); barcodeRef.current?.focus(); }} title="手機接藍牙掃描器時請開啟，避免掃出中文"
+                style={{padding:'7px 12px', background: scanMode ? '#057a55' : '#9ca3af', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', whiteSpace:'nowrap'}}>
+                {scanMode ? '掃描槍模式：開' : '掃描槍模式：關'}
+              </button>
               <button onClick={toggleCamera} style={{padding:'7px 14px', background: cameraOn ? '#e02424' : '#1a56db', color:'#fff', border:'none', borderRadius:8, cursor:'pointer'}}>
                 {cameraOn ? '關閉相機' : '📷 開啟相機'}
               </button>

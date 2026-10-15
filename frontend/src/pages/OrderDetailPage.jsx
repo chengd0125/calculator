@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../api.js';
+import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 
 const STATUS_MAP    = { pending:'待處理', picking:'撿貨中', completed:'完成撿貨', cancelled:'取消' };
 const STATUS_COLORS = { pending:'badge-pending', picking:'badge-picking', completed:'badge-completed', cancelled:'badge-cancelled' };
@@ -30,6 +31,8 @@ export default function OrderDetailPage() {
   const [showEditDropdown, setShowEditDropdown] = useState(false);
   const editSearchTimer = useRef(null);
   const editBarcodeRef  = useRef(null);
+  const detectScan      = useBarcodeScanner();
+  const [scanMode, toggleScanMode] = useScanMode();
 
   const load = async () => {
     setLoading(true);
@@ -150,6 +153,22 @@ export default function OrderDetailPage() {
   }
 
   function onEditBarcodeKey(e) {
+    const scanned = detectScan(e);
+    if (scanned) {
+      // 輸入法可能把注音寫回欄位，稍後以正確條碼覆寫並查詢
+      setTimeout(async () => {
+        clearTimeout(editSearchTimer.current);
+        setEditBarcode(scanned);
+        try {
+          const res = await api.get('/products/search', { params: { q: scanned } });
+          setEditSearchResults(res.data);
+          if (res.data.length === 1)    addEditProduct(res.data[0]);
+          else if (res.data.length > 1) setShowEditDropdown(true);
+          else alert(`找不到：${scanned}`);
+        } catch { alert('搜尋商品時發生錯誤'); }
+      }, 30);
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (editSearchResults.length === 1)    addEditProduct(editSearchResults[0]);
@@ -241,14 +260,19 @@ export default function OrderDetailPage() {
 
                 {/* 搜尋加入商品 */}
                 <div style={{marginBottom:16, position:'relative'}}>
-                  <label style={{display:'block', marginBottom:6, fontWeight:600}}>新增商品</label>
+                  <label style={{display:'block', marginBottom:6, fontWeight:600}}>新增商品
+                    <button type="button" onClick={() => { toggleScanMode(); editBarcodeRef.current?.focus(); }}
+                      style={{marginLeft:8, padding:'2px 10px', fontSize:12, background: scanMode ? '#057a55' : '#9ca3af', color:'#fff', border:'none', borderRadius:6, cursor:'pointer'}}>
+                      {scanMode ? '掃描槍模式：開' : '掃描槍模式：關'}
+                    </button>
+                  </label>
                   <input
                     ref={editBarcodeRef}
-                    type="text"
+                    {...scanInputProps(scanMode)}
                     value={editBarcode}
                     onChange={onEditBarcodeChange}
                     onKeyDown={onEditBarcodeKey}
-                    placeholder="輸入條碼或商品名稱搜尋..."
+                    placeholder={scanMode ? '掃描槍模式：直接掃描條碼（要打中文請關閉）' : '輸入條碼或商品名稱搜尋...'}
                     style={{width:'100%', fontSize:14, padding:'8px 12px', border:'1px solid #d1d5db', borderRadius:8}}
                   />
                   {showEditDropdown && editSearchResults.length > 0 && (
