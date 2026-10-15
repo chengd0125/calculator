@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import { USER_KEY } from '../storage.js';
-import { createBarcodeScannerConfig } from '../cameraScanner.js';
+import { createBarcodeScannerConfig, improveCameraCapture } from '../cameraScanner.js';
 
 let html5QrCode = null;
 
@@ -186,6 +186,7 @@ export default function NewReturnPage() {
           } catch {}
         }
       );
+      await improveCameraCapture(html5QrCode);
     } catch (err) { setCameraErr('無法開啟相機：' + err); setCameraOn(false); }
   }
 

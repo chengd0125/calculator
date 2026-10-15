@@ -26,3 +26,33 @@ export function createBarcodeScannerConfig() {
     } : {}),
   };
 }
+
+// Ask the active phone camera for more detail and continuous focus when the
+// browser exposes those controls. Older browsers simply keep their defaults.
+export async function improveCameraCapture(scanner) {
+  try {
+    const capabilities = scanner.getRunningTrackCapabilities?.();
+    const constraints = {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    };
+
+    if (capabilities?.focusMode?.includes?.('continuous')) {
+      constraints.advanced = [{ focusMode: 'continuous' }];
+    }
+
+    await scanner.applyVideoConstraints?.(constraints);
+  } catch {
+    // Higher resolution or continuous focus is optional and device-dependent.
+  }
+
+  try {
+    const zoom = scanner.getRunningTrackCameraCapabilities?.().zoomFeature();
+    if (!zoom?.isSupported()) return;
+
+    const targetZoom = Math.min(zoom.max(), Math.max(zoom.min(), 2));
+    if (targetZoom > (zoom.value() || 1)) await zoom.apply(targetZoom);
+  } catch {
+    // Keep scanning at the camera's default zoom when zoom cannot be applied.
+  }
+}
