@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
+import { USER_KEY } from '../storage.js';
 
 const STATUS_MAP    = { pending:'待處理', picking:'撿貨中', completed:'完成撿貨', cancelled:'取消' };
 const STATUS_COLORS = { pending:'badge-pending', picking:'badge-picking', completed:'badge-completed', cancelled:'badge-cancelled' };
@@ -13,7 +14,7 @@ export default function OrderDetailPage() {
   const { id }   = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const user     = JSON.parse(localStorage.getItem('user') || '{}');
+  const user     = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
 
   const [order,      setOrder]      = useState(null);
   const [loading,    setLoading]    = useState(true);

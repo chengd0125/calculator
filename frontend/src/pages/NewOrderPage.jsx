@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import ProductHistory from '../components/ProductHistory.jsx';
+import { USER_KEY } from '../storage.js';
 
 let html5QrCode = null;
 
 export default function NewOrderPage() {
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
 
   const [customers,     setCustomers]    = useState([]);
   const [selectedCust,  setSelectedCust] = useState('');

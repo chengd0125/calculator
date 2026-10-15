@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import api from '../api.js';
+import { TOKEN_KEY, USER_KEY } from '../storage.js';
 
 const ROLE_LABELS = { admin: '管理員', sales: '業務', warehouse: '倉庫' };
 
 export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const user     = JSON.parse(localStorage.getItem('user') || '{}');
+  const user     = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [canManageEmployees, setCanManageEmployees] = useState(user.role === 'admin');
 
@@ -26,8 +27,8 @@ export default function Layout() {
   }, [location]);
 
   function logout() {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
     navigate('/login');
   }
 

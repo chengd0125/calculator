@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
+import { TOKEN_KEY, USER_KEY } from '../storage.js';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -13,8 +14,8 @@ export default function LoginPage() {
     setError(''); setLoading(true);
     try {
       const res = await api.post('/auth/login', form);
-      localStorage.setItem('token', res.data.token);
-      localStorage.setItem('user',  JSON.stringify(res.data.user));
+      localStorage.setItem(TOKEN_KEY, res.data.token);
+      localStorage.setItem(USER_KEY,  JSON.stringify(res.data.user));
       navigate('/');
     } catch (err) {
       setError(err.response?.data?.message || '登入失敗，請稍後再試');

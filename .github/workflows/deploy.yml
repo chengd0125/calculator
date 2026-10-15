@@ -38,6 +38,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_TENANT: ${{ secrets.VITE_TENANT }}
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
         run: npm run build
 

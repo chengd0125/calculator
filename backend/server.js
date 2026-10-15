@@ -85,26 +85,64 @@ const dbConfig = {
   pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
 };
 
-let pool;
-async function getPool() {
-  if (!pool) pool = await mssql.connect(dbConfig);
-  return pool;
+// ============================================
+// 多廠商：每間廠商一個資料庫，依前端帶來的 X-Tenant 標頭選擇
+// .env 範例：TENANTS=fupro=WholesaleDB,014test=WholesaleDB_014test
+//            DEFAULT_TENANT=fupro   （沒帶標頭的請求使用此廠商，相容舊版前端）
+// 未設定 TENANTS 時只有一個廠商，使用 DB_DATABASE（與改版前相同）。
+// ============================================
+const TENANT_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const TENANTS = new Map();
+for (const pair of (process.env.TENANTS || '').split(',').map(x => x.trim()).filter(Boolean)) {
+  const [id, dbName] = pair.split('=').map(x => (x || '').trim());
+  if (!TENANT_RE.test(id) || !dbName) {
+    console.error(`[FATAL] TENANTS 格式錯誤：「${pair}」，應為 代號=資料庫名稱`);
+    process.exit(1);
+  }
+  TENANTS.set(id, dbName);
+}
+const DEFAULT_TENANT = process.env.DEFAULT_TENANT || (TENANTS.size ? [...TENANTS.keys()][0] : 'default');
+if (!TENANTS.size) TENANTS.set(DEFAULT_TENANT, process.env.DB_DATABASE);
+if (!TENANTS.has(DEFAULT_TENANT)) {
+  console.error(`[FATAL] DEFAULT_TENANT「${DEFAULT_TENANT}」不在 TENANTS 清單中`);
+  process.exit(1);
 }
 
-// 服務啟動時先建立資料庫連線，避免第一位使用者登入時才等待連線。
-getPool()
-  .then(() => console.log('資料庫連線已就緒'))
-  .catch(err => console.error('資料庫預先連線失敗，將在收到請求時重試：', err.message));
+const pools = new Map();
+// 一律依請求的廠商取得連線；不帶 req 只用於啟動時預先連線
+function getPool(req) {
+  const tenant = req ? req.tenant : DEFAULT_TENANT;
+  if (!tenant || !TENANTS.has(tenant)) return Promise.reject(new Error('未指定廠商'));
+  if (!pools.has(tenant)) {
+    const cp = new mssql.ConnectionPool({ ...dbConfig, database: TENANTS.get(tenant) });
+    cp.on('error', err => console.error(`[${tenant}] 資料庫連線錯誤：`, err.message));
+    const p = cp.connect();
+    p.catch(() => pools.delete(tenant)); // 連線失敗時下次請求重試
+    pools.set(tenant, p);
+  }
+  return pools.get(tenant);
+}
+
+// 解析廠商代號；必須在所有 /api 路由之前
+app.use('/api', (req, res, next) => {
+  const tenant = req.get('X-Tenant') || DEFAULT_TENANT;
+  if (!TENANTS.has(tenant)) return res.status(400).json({ message: '未知的廠商代號' });
+  req.tenant = tenant;
+  next();
+});
 
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ message: '請先登入' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
-    next();
   } catch {
     return res.status(401).json({ message: '登入已過期，請重新登入' });
   }
+  // 舊版憑證沒有廠商代號，視為預設廠商
+  if ((req.user.tenant || DEFAULT_TENANT) !== req.tenant)
+    return res.status(401).json({ message: '登入的廠商不符，請重新登入' });
+  next();
 }
 
 function adminOnly(req, res, next) {
@@ -116,7 +154,7 @@ function requirePermission(permission) {
   return async (req, res, next) => {
     if (req.user.role === 'admin') return next();
     try {
-      const db = await getPool();
+      const db = await getPool(req);
       const result = await db.request()
         .input('role',       mssql.NVarChar, req.user.role)
         .input('permission', mssql.NVarChar, permission)
@@ -129,8 +167,8 @@ function requirePermission(permission) {
   };
 }
 
-async function generateOrderNo() {
-  const db     = await getPool();
+async function generateOrderNo(req) {
+  const db     = await getPool(req);
   const today  = new Date();
   const prefix = 'ORD-' + today.getFullYear() +
     String(today.getMonth() + 1).padStart(2, '0') +
@@ -150,6 +188,7 @@ async function generateOrderNo() {
 app.get('/api/health', async (req, res) => {
   const out = {
     server: 'ok',
+    tenant: req.tenant,
     time:   new Date().toISOString(),
     env: {
       DB_SERVER:   process.env.DB_SERVER   ? 'set' : 'MISSING',
@@ -161,7 +200,7 @@ app.get('/api/health', async (req, res) => {
     },
   };
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request().query('SELECT 1 AS ok');
     out.database = 'ok';
   } catch (err) {
@@ -181,7 +220,7 @@ app.get('/api/health', async (req, res) => {
     return res.status(503).json(out);
   }
   try {
-    const r = await getPool().then(db => db.request().query('SELECT COUNT(*) AS c FROM Employees'));
+    const r = await getPool(req).then(db => db.request().query('SELECT COUNT(*) AS c FROM Employees'));
     out.employeesTable = 'ok';
     out.employeeCount  = r.recordset[0].c;
   } catch (err) {
@@ -198,7 +237,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ message: '請輸入帳號和密碼' });
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request()
       .input('username', mssql.NVarChar, username)
       .query(`SELECT * FROM Employees WHERE Username = @username AND IsActive = 1`);
@@ -207,7 +246,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     const ok = await bcrypt.compare(password, emp.PasswordHash);
     if (!ok) return res.status(401).json({ message: '帳號或密碼錯誤' });
     const token = jwt.sign(
-      { id: emp.EmployeeID, username: emp.Username, name: emp.FullName, role: emp.Role },
+      { id: emp.EmployeeID, username: emp.Username, name: emp.FullName, role: emp.Role, tenant: req.tenant },
       JWT_SECRET,
       { expiresIn: '12h' }
     );
@@ -228,7 +267,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 // ============================================
 app.get('/api/products', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const { search, category } = req.query;
     let sql = `SELECT p.*, ce.FullName AS CreatedByName, ue.FullName AS UpdatedByName
                FROM Products p
@@ -246,7 +285,7 @@ app.get('/api/products', authMiddleware, async (req, res) => {
 
 app.get('/api/products/barcode/:barcode', authMiddleware, async (req, res) => {
   try {
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request()
       .input('barcode', mssql.NVarChar, req.params.barcode)
       .query(`SELECT * FROM Products WHERE Barcode = @barcode AND IsActive = 1`);
@@ -259,7 +298,7 @@ app.get('/api/products/search', authMiddleware, async (req, res) => {
   try {
     const { q } = req.query;
     if (!q || q.trim().length < 1) return res.json([]);
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request()
       .input('q', mssql.NVarChar, `%${q.trim()}%`)
       .query(`
@@ -274,7 +313,7 @@ app.get('/api/products/search', authMiddleware, async (req, res) => {
 
 app.get('/api/products/categories', authMiddleware, async (req, res) => {
   try {
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request()
       .query(`SELECT DISTINCT Category FROM Products WHERE IsActive = 1 AND Category IS NOT NULL ORDER BY Category`);
     res.json(result.recordset.map(r => r.Category));
@@ -284,7 +323,7 @@ app.get('/api/products/categories', authMiddleware, async (req, res) => {
 // 商品出貨紀錄：可依客戶篩選；業務只看得到自己開的訂單（與訂單列表相同規則）
 app.get('/api/products/:id/history', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const request = db.request()
       .input('pid',   mssql.Int, req.params.id)
       .input('limit', mssql.Int, Math.min(parseInt(req.query.limit, 10) || 200, 1000));
@@ -308,7 +347,7 @@ app.post('/api/products', authMiddleware, requirePermission('product_add'), asyn
   try {
     const { Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category } = req.body;
     if (!ProductName) return res.status(400).json({ message: '商品名稱為必填' });
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request()
       .input('Barcode',     mssql.NVarChar, Barcode     || null)
       .input('ProductName', mssql.NVarChar, ProductName)
@@ -329,7 +368,7 @@ app.post('/api/products', authMiddleware, requirePermission('product_add'), asyn
 app.put('/api/products/:id', authMiddleware, requirePermission('product_edit'), async (req, res) => {
   try {
     const { Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category } = req.body;
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request()
       .input('ProductID',   mssql.Int,      req.params.id)
       .input('Barcode',     mssql.NVarChar, Barcode     || null)
@@ -354,7 +393,7 @@ app.delete('/api/products', authMiddleware, requirePermission('product_delete'),
   if (!Array.isArray(ids) || ids.length === 0)
     return res.status(400).json({ message: '請提供要刪除的商品 ID' });
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const idList = ids.map(id => parseInt(id)).filter(id => !isNaN(id));
     const checkReq = db.request();
     const inParams = idList.map((id, i) => { checkReq.input(`cid${i}`, mssql.Int, id); return `@cid${i}`; }).join(',');
@@ -373,7 +412,7 @@ app.delete('/api/products', authMiddleware, requirePermission('product_delete'),
 
 app.delete('/api/products/:id', authMiddleware, requirePermission('product_delete'), async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const check = await db.request()
       .input('id', mssql.Int, req.params.id)
       .query(`SELECT COUNT(*) AS cnt FROM OrderItems WHERE ProductID = @id`);
@@ -386,7 +425,7 @@ app.delete('/api/products/:id', authMiddleware, requirePermission('product_delet
 
 app.get('/api/products/export', authMiddleware, async (req, res) => {
   try {
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request()
       .query(`SELECT Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category FROM Products WHERE IsActive = 1 ORDER BY Category, ProductName`);
     const ws = XLSX.utils.json_to_sheet(result.recordset.map(p => ({
@@ -428,8 +467,8 @@ function sameValue(field, a, b) {
   return (a ?? '') === (b ?? '');
 }
 
-async function diffImport(rows) {
-  const db = await getPool();
+async function diffImport(req, rows) {
+  const db = await getPool(req);
   const existing = (await db.request().query(
     `SELECT ProductID, Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category, IsActive FROM Products`
   )).recordset;
@@ -469,7 +508,7 @@ async function diffImport(rows) {
 app.post('/api/products/import/preview', authMiddleware, requirePermission('product_add'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: '請上傳 Excel 檔案' });
-    res.json(await diffImport(parseImportFile(req.file.buffer)));
+    res.json(await diffImport(req, parseImportFile(req.file.buffer)));
   } catch (err) { res.status(500).json({ message: '讀取失敗，請確認檔案格式' }); }
 });
 
@@ -478,8 +517,8 @@ app.post('/api/products/import/apply', authMiddleware, requirePermission('produc
   let tx;
   try {
     // 伺服器重新比對一次，不採信前端傳來的分類結果
-    const { created, changed, unchanged, errors } = await diffImport(parseImportFile(req.file.buffer));
-    const db = await getPool();
+    const { created, changed, unchanged, errors } = await diffImport(req, parseImportFile(req.file.buffer));
+    const db = await getPool(req);
     if (changed.length && req.user.role !== 'admin') {
       const perm = await db.request()
         .input('role', mssql.NVarChar, req.user.role)
@@ -527,7 +566,7 @@ app.post('/api/products/import', authMiddleware, requirePermission('product_add'
     const wb   = XLSX.read(req.file.buffer, { type:'buffer' });
     const ws   = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws);
-    const db   = await getPool();
+    const db   = await getPool(req);
     let success = 0, errors = [];
     for (const row of rows) {
       const barcode  = String(row['條碼']    || '').trim() || null;
@@ -573,7 +612,7 @@ app.post('/api/products/import', authMiddleware, requirePermission('product_add'
 // ============================================
 app.get('/api/employees', authMiddleware, requirePermission('employee_view'), async (req, res) => {
   try {
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request().query(`SELECT EmployeeID, Username, FullName, Role, Phone, IsActive, CreatedAt, CONVERT(VARCHAR(16), LastLoginAt, 120) AS LastLoginAt FROM Employees ORDER BY FullName`);
     res.json(result.recordset);
   } catch (err) { res.status(500).json({ message: '伺服器錯誤' }); }
@@ -586,7 +625,7 @@ app.post('/api/employees', authMiddleware, requirePermission('employee_add'), as
     if (!['admin', 'sales', 'warehouse'].includes(Role || 'sales')) return res.status(400).json({ message: '無效的角色' });
     if (req.user.role !== 'admin' && Role === 'admin') return res.status(403).json({ message: '您無法建立管理員帳號' });
     const hash = await bcrypt.hash(Password, 10);
-    const db   = await getPool();
+    const db   = await getPool(req);
     const result = await db.request()
       .input('Username', mssql.NVarChar, Username).input('PasswordHash', mssql.NVarChar, hash)
       .input('FullName', mssql.NVarChar, FullName).input('Role', mssql.NVarChar, Role || 'sales').input('Phone', mssql.NVarChar, Phone || null)
@@ -601,7 +640,7 @@ app.post('/api/employees', authMiddleware, requirePermission('employee_add'), as
 app.put('/api/employees/:id', authMiddleware, requirePermission('employee_edit'), async (req, res) => {
   try {
     const { Password, FullName, Role, Phone, IsActive } = req.body;
-    const db = await getPool();
+    const db = await getPool(req);
     if (!['admin', 'sales', 'warehouse'].includes(Role)) return res.status(400).json({ message: '無效的角色' });
     if (req.user.role !== 'admin') {
       const target = await db.request().input('id', mssql.Int, req.params.id)
@@ -629,7 +668,7 @@ app.put('/api/employees/:id', authMiddleware, requirePermission('employee_edit')
 
 app.get('/api/employees/:id/deletable', authMiddleware, requirePermission('employee_delete'), async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request().input('id', mssql.Int, req.params.id)
       .query(`SELECT (SELECT COUNT(*) FROM Orders WHERE EmployeeID = @id) + (SELECT COUNT(*) FROM [Returns] WHERE EmployeeID = @id) AS cnt`);
     const cnt = result.recordset[0].cnt;
@@ -640,7 +679,7 @@ app.get('/api/employees/:id/deletable', authMiddleware, requirePermission('emplo
 app.delete('/api/employees/:id', authMiddleware, requirePermission('employee_delete'), async (req, res) => {
   try {
     if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ message: '無法操作自己的帳號' });
-    const db = await getPool();
+    const db = await getPool(req);
     if (req.user.role !== 'admin') {
       const target = await db.request().input('id', mssql.Int, req.params.id)
         .query(`SELECT Role FROM Employees WHERE EmployeeID=@id`);
@@ -660,7 +699,7 @@ app.delete('/api/employees/:id', authMiddleware, requirePermission('employee_del
 // ============================================
 app.get('/api/customers', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const { search } = req.query;
     const request = db.request();
     let sql = `SELECT * FROM Customers WHERE IsActive = 1`;
@@ -675,7 +714,7 @@ app.post('/api/customers', authMiddleware, requirePermission('customer_add'), as
   try {
     const { CustomerCode, CompanyName, ContactName, Phone, Mobile, Address, TaxID, CreditLimit, Notes } = req.body;
     if (!CompanyName) return res.status(400).json({ message: '公司名稱為必填' });
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request()
       .input('CustomerCode', mssql.NVarChar, CustomerCode || null).input('CompanyName', mssql.NVarChar, CompanyName)
       .input('ContactName', mssql.NVarChar, ContactName || null).input('Phone', mssql.NVarChar, Phone || null)
@@ -692,7 +731,7 @@ app.post('/api/customers', authMiddleware, requirePermission('customer_add'), as
 app.put('/api/customers/:id', authMiddleware, requirePermission('customer_edit'), async (req, res) => {
   try {
     const { CustomerCode, CompanyName, ContactName, Phone, Mobile, Address, TaxID, CreditLimit, Notes, IsActive } = req.body;
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request()
       .input('CustomerID', mssql.Int, req.params.id).input('CustomerCode', mssql.NVarChar, CustomerCode || null)
       .input('CompanyName', mssql.NVarChar, CompanyName).input('ContactName', mssql.NVarChar, ContactName || null)
@@ -707,7 +746,7 @@ app.put('/api/customers/:id', authMiddleware, requirePermission('customer_edit')
 
 app.delete('/api/customers/:id', authMiddleware, requirePermission('customer_delete'), async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request().input('id', mssql.Int, req.params.id).query(`UPDATE Customers SET IsActive = 0 WHERE CustomerID = @id`);
     res.json({ message: '客戶已刪除' });
   } catch (err) { res.status(500).json({ message: '伺服器錯誤' }); }
@@ -718,7 +757,7 @@ app.delete('/api/customers/:id', authMiddleware, requirePermission('customer_del
 // ============================================
 app.get('/api/orders', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const { status, startDate, endDate, customerId } = req.query;
     const request = db.request();
     let sql = `SELECT o.*, c.CompanyName, c.CustomerCode, e.FullName AS EmployeeName FROM Orders o JOIN Customers c ON o.CustomerID = c.CustomerID JOIN Employees e ON o.EmployeeID = e.EmployeeID WHERE 1=1`;
@@ -735,7 +774,7 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
 
 app.get('/api/orders/:id', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const orderResult = await db.request().input('id', mssql.Int, req.params.id)
       .query(`SELECT o.*, c.CompanyName, c.CustomerCode, c.ContactName, c.Phone AS CustomerPhone, c.Address AS CustomerAddress, c.TaxID, e.FullName AS EmployeeName FROM Orders o JOIN Customers c ON o.CustomerID = c.CustomerID JOIN Employees e ON o.EmployeeID = e.EmployeeID WHERE o.OrderID = @id`);
     if (!orderResult.recordset[0]) return res.status(404).json({ message: '訂單不存在' });
@@ -747,14 +786,14 @@ app.get('/api/orders/:id', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/orders', authMiddleware, requirePermission('order_add'), async (req, res) => {
-  const transaction = new mssql.Transaction(await getPool());
+  const transaction = new mssql.Transaction(await getPool(req));
   try {
     const { CustomerID, items, Notes } = req.body;
     if (!CustomerID)    return res.status(400).json({ message: '請選擇客戶' });
     if (!items?.length) return res.status(400).json({ message: '請至少新增一項商品' });
     await transaction.begin();
     const req2        = new mssql.Request(transaction);
-    const orderNo     = await generateOrderNo();
+    const orderNo     = await generateOrderNo(req);
     const totalAmount = items.reduce((sum, i) => sum + (i.Quantity * i.UnitPrice), 0);
     const orderResult = await req2
       .input('OrderNo', mssql.NVarChar, orderNo).input('CustomerID', mssql.Int, CustomerID)
@@ -781,7 +820,7 @@ app.put('/api/orders/:id/status', authMiddleware, async (req, res) => {
     const validStatuses = ['pending', 'picking', 'completed', 'cancelled'];
     if (!validStatuses.includes(status)) return res.status(400).json({ message: '無效的狀態值' });
     if (req.user.role === 'sales' && status !== 'cancelled') return res.status(403).json({ message: '權限不足' });
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request().input('id', mssql.Int, req.params.id).input('status', mssql.NVarChar, status)
       .query(`UPDATE Orders SET Status=@status, UpdatedAt=GETDATE() WHERE OrderID=@id`);
     res.json({ message: '狀態已更新' });
@@ -791,7 +830,7 @@ app.put('/api/orders/:id/status', authMiddleware, async (req, res) => {
 app.put('/api/orders/:orderId/items/:itemId/picked', authMiddleware, async (req, res) => {
   try {
     const { pickedQty } = req.body;
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request()
       .input('itemId', mssql.Int, req.params.itemId).input('orderId', mssql.Int, req.params.orderId).input('pickedQty', mssql.Int, pickedQty)
       .query(`UPDATE OrderItems SET PickedQty=@pickedQty WHERE ItemID=@itemId AND OrderID=@orderId`);
@@ -800,7 +839,7 @@ app.put('/api/orders/:orderId/items/:itemId/picked', authMiddleware, async (req,
 });
 
 app.put('/api/orders/:id', authMiddleware, requirePermission('order_edit'), async (req, res) => {
-  const transaction = new mssql.Transaction(await getPool());
+  const transaction = new mssql.Transaction(await getPool(req));
   try {
     const { items, Notes } = req.body;
     if (!items?.length) return res.status(400).json({ message: '請至少保留一項商品' });
@@ -824,7 +863,7 @@ app.put('/api/orders/:id', authMiddleware, requirePermission('order_edit'), asyn
 });
 
 app.delete('/api/orders/:id', authMiddleware, requirePermission('order_delete'), async (req, res) => {
-  const transaction = new mssql.Transaction(await getPool());
+  const transaction = new mssql.Transaction(await getPool(req));
   try {
     await transaction.begin();
     await new mssql.Request(transaction).input('id', mssql.Int, req.params.id).query(`DELETE FROM OrderItems WHERE OrderID = @id`);
@@ -836,7 +875,7 @@ app.delete('/api/orders/:id', authMiddleware, requirePermission('order_delete'),
 
 app.get('/api/orders/:id/export', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const orderResult = await db.request().input('id', mssql.Int, req.params.id)
       .query(`SELECT o.OrderNo, o.OrderDate, o.TotalAmount, o.Notes, c.CompanyName, e.FullName AS EmployeeName FROM Orders o JOIN Customers c ON o.CustomerID = c.CustomerID JOIN Employees e ON o.EmployeeID = e.EmployeeID WHERE o.OrderID = @id`);
     const order = orderResult.recordset[0];
@@ -859,8 +898,8 @@ app.get('/api/orders/:id/export', authMiddleware, async (req, res) => {
 // ============================================
 // 退貨
 // ============================================
-async function generateReturnNo() {
-  const db     = await getPool();
+async function generateReturnNo(req) {
+  const db     = await getPool(req);
   const today  = new Date();
   const prefix = 'RET-' + today.getFullYear() +
     String(today.getMonth() + 1).padStart(2, '0') +
@@ -874,7 +913,7 @@ async function generateReturnNo() {
 
 app.get('/api/returns', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const { status, startDate, endDate } = req.query;
     const request = db.request();
     let sql = `SELECT r.*, c.CompanyName, c.CustomerCode, e.FullName AS EmployeeName
@@ -894,7 +933,7 @@ app.get('/api/returns', authMiddleware, async (req, res) => {
 
 app.get('/api/returns/:id', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const returnResult = await db.request().input('id', mssql.Int, req.params.id)
       .query(`SELECT r.*, c.CompanyName, c.CustomerCode, c.ContactName, c.Phone AS CustomerPhone, c.Address AS CustomerAddress, c.TaxID, e.FullName AS EmployeeName
               FROM [Returns] r
@@ -911,14 +950,14 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/returns', authMiddleware, requirePermission('return_add'), async (req, res) => {
-  const transaction = new mssql.Transaction(await getPool());
+  const transaction = new mssql.Transaction(await getPool(req));
   try {
     const { CustomerID, items, Notes } = req.body;
     if (!CustomerID)    return res.status(400).json({ message: '請選擇客戶' });
     if (!items?.length) return res.status(400).json({ message: '請至少新增一項商品' });
     await transaction.begin();
     const req2        = new mssql.Request(transaction);
-    const returnNo    = await generateReturnNo();
+    const returnNo    = await generateReturnNo(req);
     const totalAmount = items.reduce((sum, i) => sum + (i.Quantity * i.UnitPrice), 0);
     const retResult   = await req2
       .input('ReturnNo', mssql.NVarChar, returnNo).input('CustomerID', mssql.Int, CustomerID)
@@ -943,7 +982,7 @@ app.put('/api/returns/:id/status', authMiddleware, requirePermission('return_edi
   try {
     const { status } = req.body;
     if (!['pending','completed','cancelled'].includes(status)) return res.status(400).json({ message: '無效的狀態值' });
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request().input('id', mssql.Int, req.params.id).input('status', mssql.NVarChar, status)
       .query(`UPDATE [Returns] SET Status=@status, UpdatedAt=GETDATE() WHERE ReturnID=@id`);
     res.json({ message: '狀態已更新' });
@@ -951,7 +990,7 @@ app.put('/api/returns/:id/status', authMiddleware, requirePermission('return_edi
 });
 
 app.delete('/api/returns/:id', authMiddleware, requirePermission('return_delete'), async (req, res) => {
-  const transaction = new mssql.Transaction(await getPool());
+  const transaction = new mssql.Transaction(await getPool(req));
   try {
     await transaction.begin();
     await new mssql.Request(transaction).input('id', mssql.Int, req.params.id).query(`DELETE FROM ReturnItems WHERE ReturnID = @id`);
@@ -963,7 +1002,7 @@ app.delete('/api/returns/:id', authMiddleware, requirePermission('return_delete'
 
 app.get('/api/returns/:id/export', authMiddleware, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const retResult = await db.request().input('id', mssql.Int, req.params.id)
       .query(`SELECT r.ReturnNo, r.ReturnDate, r.TotalAmount, r.Notes, c.CompanyName, e.FullName AS EmployeeName FROM [Returns] r JOIN Customers c ON r.CustomerID = c.CustomerID JOIN Employees e ON r.EmployeeID = e.EmployeeID WHERE r.ReturnID = @id`);
     const ret = retResult.recordset[0];
@@ -988,7 +1027,7 @@ app.get('/api/returns/:id/export', authMiddleware, async (req, res) => {
 // ============================================
 app.get('/api/dashboard', authMiddleware, async (req, res) => {
   try {
-    const db      = await getPool();
+    const db      = await getPool(req);
     const isSales = req.user.role === 'sales';
     const empId   = req.user.id;
     const salesFilter = isSales ? 'AND EmployeeID = @empId' : '';
@@ -1030,7 +1069,7 @@ app.get('/api/dashboard', authMiddleware, async (req, res) => {
 // ============================================
 app.get('/api/settings', authMiddleware, async (req, res) => {
   try {
-    const db     = await getPool();
+    const db     = await getPool(req);
     const result = await db.request().query(`SELECT SettingKey, SettingValue FROM SystemSettings`);
     const settings = {};
     result.recordset.forEach(r => { settings[r.SettingKey] = r.SettingValue; });
@@ -1040,7 +1079,7 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
 
 app.put('/api/settings', authMiddleware, requirePermission('settings_edit'), async (req, res) => {
   try {
-    const db      = await getPool();
+    const db      = await getPool(req);
     const allowed = ['COMPANY_NAME', 'COMPANY_PHONE', 'COMPANY_ADDRESS'];
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
@@ -1061,7 +1100,7 @@ app.put('/api/settings', authMiddleware, requirePermission('settings_edit'), asy
 // ============================================
 app.get('/api/permissions', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request().query(`SELECT Role, Permission, IsAllowed FROM RolePermissions ORDER BY Role, Permission`);
     res.json(result.recordset);
   } catch (err) { res.status(500).json({ message: '伺服器錯誤' }); }
@@ -1070,7 +1109,7 @@ app.get('/api/permissions', authMiddleware, adminOnly, async (req, res) => {
 app.put('/api/permissions', authMiddleware, adminOnly, async (req, res) => {
   try {
     const { Role, Permission, IsAllowed } = req.body;
-    const db = await getPool();
+    const db = await getPool(req);
     await db.request()
       .input('Role', mssql.NVarChar, Role).input('Permission', mssql.NVarChar, Permission).input('IsAllowed', mssql.Bit, IsAllowed)
       .query(`MERGE RolePermissions AS t USING (SELECT @Role AS Role, @Permission AS Permission) AS s ON t.Role = s.Role AND t.Permission = s.Permission WHEN MATCHED THEN UPDATE SET IsAllowed = @IsAllowed WHEN NOT MATCHED THEN INSERT (Role, Permission, IsAllowed) VALUES (@Role, @Permission, @IsAllowed);`);
@@ -1081,7 +1120,7 @@ app.put('/api/permissions', authMiddleware, adminOnly, async (req, res) => {
 app.get('/api/permissions/my', authMiddleware, async (req, res) => {
   try {
     if (req.user.role === 'admin') return res.json({ all: true, permissions: [] });
-    const db = await getPool();
+    const db = await getPool(req);
     const result = await db.request().input('role', mssql.NVarChar, req.user.role)
       .query(`SELECT Permission FROM RolePermissions WHERE Role=@role AND IsAllowed=1`);
     res.json({ all: false, permissions: result.recordset.map(r => r.Permission) });
@@ -1093,7 +1132,9 @@ app.get('/api/permissions/my', authMiddleware, async (req, res) => {
 // ============================================
 app.listen(PORT, () => {
   console.log(`✅ 批發商業務管理系統後端已啟動: http://localhost:${PORT}`);
-  getPool()
-    .then(() => console.log('✅ MS SQL 資料庫連線成功'))
-    .catch(err => console.error('❌ 資料庫連線失敗:', err.message));
+  for (const tenant of TENANTS.keys()) {
+    getPool({ tenant })
+      .then(() => console.log(`✅ [${tenant}] 資料庫連線成功`))
+      .catch(err => console.error(`❌ [${tenant}] 資料庫連線失敗:`, err.message));
+  }
 });

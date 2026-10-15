@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
+import { USER_KEY } from '../storage.js';
 
 const STATUS_MAP    = { pending:'待確認', completed:'已完成', cancelled:'取消' };
 const STATUS_COLORS = { pending:'badge-pending', completed:'badge-completed', cancelled:'badge-cancelled' };
@@ -14,7 +15,7 @@ export default function ReturnsPage() {
   const [start,    setStart]    = useState('');
   const [end,      setEnd]      = useState('');
   const [loading,  setLoading]  = useState(false);
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
 
   const load = async () => {
     setLoading(true);

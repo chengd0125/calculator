@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import api from '../api.js';
+import { USER_KEY } from '../storage.js';
 
 const EMPTY = { Username:'', Password:'', FullName:'', Role:'sales', Phone:'', IsActive:1 };
 const ROLE_LABELS = { admin:'管理員', sales:'業務', warehouse:'倉庫' };
 
 export default function EmployeesPage() {
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
   const [list,    setList]    = useState([]);
   const [modal,   setModal]   = useState(null);
   const [form,    setForm]    = useState(EMPTY);

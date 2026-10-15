@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import api from '../api.js';
 import ProductHistory from '../components/ProductHistory.jsx';
+import { USER_KEY } from '../storage.js';
 
 const EMPTY = { Barcode:'', ProductName:'', Unit:'個', CostPrice:'', SalePrice:'', Stock:'', Category:'' };
 const fmt = n => Number(n||0).toLocaleString();
@@ -23,7 +24,7 @@ export default function ProductsPage() {
   const [perms,        setPerms]       = useState([]);
   const [selected,     setSelected]    = useState(new Set());
   const fileRef = useRef();
-  const user    = JSON.parse(localStorage.getItem('user') || '{}');
+  const user    = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
   const isAdmin = user.role === 'admin';
 
   const hasPerm = (p) => isAdmin || perms.includes(p);

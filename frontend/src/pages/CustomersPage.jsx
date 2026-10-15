@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../api.js';
+import { USER_KEY } from '../storage.js';
 
 const EMPTY = { CustomerCode:'', CompanyName:'', ContactName:'', Phone:'', Mobile:'', Address:'', TaxID:'', CreditLimit:'', Notes:'' };
 
@@ -10,7 +11,7 @@ export default function CustomersPage() {
   const [form,    setForm]    = useState(EMPTY);
   const [msg,     setMsg]     = useState(null);
   const [loading, setLoading] = useState(false);
-  const user    = JSON.parse(localStorage.getItem('user') || '{}');
+  const user    = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
   const isAdmin = user.role === 'admin';
 
   const load = async () => {
