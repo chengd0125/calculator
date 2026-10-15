@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Environment files (contains real credentials)
+.env
+backend/.env
+frontend/.env
+
+# Build output
+frontend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 憑證與私鑰 (請勿提交)
+*.pem
+*.key
+*.pfx
+*.p12
+
+# 含硬編碼憑證的臨時腳本
+backend/reset-password.js
