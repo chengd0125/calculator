@@ -6,10 +6,8 @@ export function createBarcodeScannerConfig() {
 
   return {
     fps: 20,
-    qrbox: (viewfinderWidth, viewfinderHeight) => ({
-      width: Math.min(viewfinderWidth, Math.max(220, Math.floor(Math.min(viewfinderWidth * 0.96, 960)))),
-      height: Math.min(viewfinderHeight, Math.max(140, Math.floor(Math.min(viewfinderHeight * 0.68, 480)))),
-    }),
+    // Leave qrbox unset so the decoder examines the full camera preview;
+    // this avoids missing a barcode when the phone or label is turned.
     ...(formats ? {
       formatsToSupport: [
         formats.EAN_13,
