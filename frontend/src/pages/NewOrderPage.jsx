@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
+import ProductHistory from '../components/ProductHistory.jsx';
 
 let html5QrCode = null;
 
@@ -340,6 +341,10 @@ export default function NewOrderPage() {
                   </label>
                   <button className="btn btn-success" onClick={addProduct}>✓ 確認加入明細</button>
                   <button className="btn btn-ghost" onClick={cancelProduct}>取消</button>
+                </div>
+                <div style={{marginTop:12, paddingTop:10, borderTop:'1px dashed #93c5fd'}}>
+                  <ProductHistory compact productId={selectedProduct.ProductID} customerId={selectedCust}
+                    onUsePrice={price => setPendingPrice(String(price))} />
                 </div>
               </div>
             </div>

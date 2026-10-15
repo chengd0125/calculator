@@ -281,6 +281,29 @@ app.get('/api/products/categories', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ message: '伺服器錯誤' }); }
 });
 
+// 商品出貨紀錄：可依客戶篩選；業務只看得到自己開的訂單（與訂單列表相同規則）
+app.get('/api/products/:id/history', authMiddleware, async (req, res) => {
+  try {
+    const db = await getPool();
+    const request = db.request()
+      .input('pid',   mssql.Int, req.params.id)
+      .input('limit', mssql.Int, Math.min(parseInt(req.query.limit, 10) || 200, 1000));
+    let sql = `SELECT TOP (@limit) o.OrderID, o.OrderNo, o.OrderDate, o.Status,
+                 c.CustomerID, c.CompanyName, c.CustomerCode, e.FullName AS EmployeeName,
+                 oi.Quantity, oi.Unit, oi.UnitPrice, oi.Amount
+               FROM OrderItems oi
+               JOIN Orders o    ON oi.OrderID   = o.OrderID
+               JOIN Customers c ON o.CustomerID = c.CustomerID
+               JOIN Employees e ON o.EmployeeID = e.EmployeeID
+               WHERE oi.ProductID = @pid AND o.Status <> 'cancelled'`;
+    if (req.user.role === 'sales') { sql += ` AND o.EmployeeID = @empId`; request.input('empId', mssql.Int, req.user.id); }
+    if (req.query.customerId) { sql += ` AND o.CustomerID = @cid`; request.input('cid', mssql.Int, req.query.customerId); }
+    sql += ` ORDER BY o.OrderDate DESC, o.OrderID DESC`;
+    const result = await request.query(sql);
+    res.json(result.recordset);
+  } catch (err) { res.status(500).json({ message: '查詢出貨紀錄失敗' }); }
+});
+
 app.post('/api/products', authMiddleware, requirePermission('product_add'), async (req, res) => {
   try {
     const { Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category } = req.body;
@@ -377,6 +400,125 @@ app.get('/api/products/export', authMiddleware, async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
   } catch (err) { res.status(500).json({ message: '匯出失敗' }); }
+});
+
+// ---- 匯入比對：先預覽差異，確認後只寫入新增與有變動的商品，相同的直接跳過 ----
+const IMPORT_FIELDS = [
+  ['ProductName', '商品名稱'], ['Unit', '單位'], ['CostPrice', '進價'],
+  ['SalePrice', '售價'], ['Stock', '庫存'], ['Category', '分類'],
+];
+
+function parseImportFile(buffer) {
+  const wb = XLSX.read(buffer, { type:'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws).map((row, i) => ({
+    line:        i + 2, // Excel 第 1 行是標題
+    Barcode:     String(row['條碼']    ?? '').trim() || null,
+    ProductName: String(row['商品名稱'] ?? '').trim(),
+    Unit:        String(row['單位']    ?? '').trim() || '個',
+    CostPrice:   Number(row['進價']) || 0,
+    SalePrice:   Number(row['售價']) || 0,
+    Stock:       parseInt(row['庫存'], 10) || 0,
+    Category:    String(row['分類']    ?? '').trim() || null,
+  }));
+}
+
+function sameValue(field, a, b) {
+  if (['CostPrice', 'SalePrice', 'Stock'].includes(field)) return Number(a || 0) === Number(b || 0);
+  return (a ?? '') === (b ?? '');
+}
+
+async function diffImport(rows) {
+  const db = await getPool();
+  const existing = (await db.request().query(
+    `SELECT ProductID, Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category, IsActive FROM Products`
+  )).recordset;
+  const byBarcode = new Map(existing.filter(p => p.Barcode).map(p => [p.Barcode, p]));
+  const byName = new Map();
+  for (const p of existing) byName.set(p.ProductName, [...(byName.get(p.ProductName) || []), p]);
+
+  const created = [], changed = [], errors = [];
+  let unchanged = 0;
+  const seen = new Set();
+  for (const r of rows) {
+    if (!r.ProductName) { errors.push(`第 ${r.line} 行：商品名稱為空`); continue; }
+    const key = r.Barcode ? `b:${r.Barcode}` : `n:${r.ProductName}`;
+    if (seen.has(key)) { errors.push(`第 ${r.line} 行：「${r.Barcode || r.ProductName}」在檔案中重複，已略過`); continue; }
+    seen.add(key);
+
+    // 有條碼用條碼比對；沒條碼用商品名稱比對，避免重複匯入時一直新增
+    let match = null;
+    if (r.Barcode) match = byBarcode.get(r.Barcode) || null;
+    else {
+      const sameName = byName.get(r.ProductName) || [];
+      if (sameName.length > 1) { errors.push(`第 ${r.line} 行：「${r.ProductName}」有多筆同名商品，請填寫條碼`); continue; }
+      match = sameName[0] || null;
+    }
+
+    if (!match) { created.push(r); continue; }
+    const diffs = IMPORT_FIELDS
+      .filter(([f]) => !sameValue(f, match[f], r[f]))
+      .map(([f, label]) => ({ field: f, label, from: match[f], to: r[f] }));
+    if (!match.IsActive) diffs.push({ field: 'IsActive', label: '狀態', from: '停用', to: '啟用' });
+    if (diffs.length) changed.push({ ...r, ProductID: match.ProductID, diffs });
+    else unchanged++;
+  }
+  return { created, changed, unchanged, errors };
+}
+
+app.post('/api/products/import/preview', authMiddleware, requirePermission('product_add'), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: '請上傳 Excel 檔案' });
+    res.json(await diffImport(parseImportFile(req.file.buffer)));
+  } catch (err) { res.status(500).json({ message: '讀取失敗，請確認檔案格式' }); }
+});
+
+app.post('/api/products/import/apply', authMiddleware, requirePermission('product_add'), upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: '請上傳 Excel 檔案' });
+  let tx;
+  try {
+    // 伺服器重新比對一次，不採信前端傳來的分類結果
+    const { created, changed, unchanged, errors } = await diffImport(parseImportFile(req.file.buffer));
+    const db = await getPool();
+    if (changed.length && req.user.role !== 'admin') {
+      const perm = await db.request()
+        .input('role', mssql.NVarChar, req.user.role)
+        .query(`SELECT IsAllowed FROM RolePermissions WHERE Role=@role AND Permission='product_edit'`);
+      if (!perm.recordset[0]?.IsAllowed)
+        return res.status(403).json({ message: `有 ${changed.length} 筆商品需要修改，但您沒有修改商品的權限` });
+    }
+    tx = new mssql.Transaction(db);
+    await tx.begin();
+    const bind = (r) => new mssql.Request(tx)
+      .input('Barcode',     mssql.NVarChar,        r.Barcode)
+      .input('ProductName', mssql.NVarChar,        r.ProductName)
+      .input('Unit',        mssql.NVarChar,        r.Unit)
+      .input('CostPrice',   mssql.Decimal(10, 2),  r.CostPrice)
+      .input('SalePrice',   mssql.Decimal(10, 2),  r.SalePrice)
+      .input('Stock',       mssql.Int,             r.Stock)
+      .input('Category',    mssql.NVarChar,        r.Category)
+      .input('By',          mssql.Int,             req.user.id);
+    for (const r of changed) {
+      await bind(r).input('ProductID', mssql.Int, r.ProductID).query(
+        `UPDATE Products SET ProductName=@ProductName, Unit=@Unit, CostPrice=@CostPrice, SalePrice=@SalePrice,
+           Stock=@Stock, Category=@Category, IsActive=1, UpdatedAt=GETDATE(), UpdatedBy=@By WHERE ProductID=@ProductID`);
+    }
+    for (const r of created) {
+      await bind(r).query(
+        `INSERT INTO Products (Barcode, ProductName, Unit, CostPrice, SalePrice, Stock, Category, CreatedBy, UpdatedBy)
+         VALUES (@Barcode, @ProductName, @Unit, @CostPrice, @SalePrice, @Stock, @Category, @By, @By)`);
+    }
+    await tx.commit();
+    res.json({
+      created: created.length, updated: changed.length, unchanged, errors,
+      message: `匯入完成：新增 ${created.length} 筆、更新 ${changed.length} 筆、相同跳過 ${unchanged} 筆` +
+               (errors.length ? `、${errors.length} 筆有問題未匯入` : ''),
+    });
+  } catch (err) {
+    if (tx) await tx.rollback().catch(() => {});
+    console.error(err);
+    res.status(500).json({ message: '匯入失敗，資料未變更：' + err.message });
+  }
 });
 
 app.post('/api/products/import', authMiddleware, requirePermission('product_add'), upload.single('file'), async (req, res) => {

@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import api from '../api.js';
+import ProductHistory from '../components/ProductHistory.jsx';
 
 const EMPTY = { Barcode:'', ProductName:'', Unit:'個', CostPrice:'', SalePrice:'', Stock:'', Category:'' };
 const fmt = n => Number(n||0).toLocaleString();
+const PAGE_SIZE = 200;
+const showVal = v => (v === null || v === undefined || v === '') ? '（空白）' : String(v);
 
 export default function ProductsPage() {
   const [products,     setProducts]    = useState([]);
@@ -12,6 +15,11 @@ export default function ProductsPage() {
   const [loading,      setLoading]     = useState(false);
   const [msg,          setMsg]         = useState(null);
   const [importResult, setImportResult]= useState(null);
+  const [preview,      setPreview]     = useState(null);   // 匯入預覽：{ file, created, changed, unchanged, errors }
+  const [previewTab,   setPreviewTab]  = useState('changed');
+  const [importing,    setImporting]   = useState(false);
+  const [limit,        setLimit]       = useState(PAGE_SIZE);
+  const [historyOf,    setHistoryOf]   = useState(null);   // 正在查看出貨紀錄的商品
   const [perms,        setPerms]       = useState([]);
   const [selected,     setSelected]    = useState(new Set());
   const fileRef = useRef();
@@ -27,16 +35,26 @@ export default function ProductsPage() {
     }).catch(() => {});
   }, []);
 
+  // 一次載入全部商品，搜尋改在前端篩選，打字時不必每個字都重新向伺服器要資料
   const load = async () => {
     setLoading(true);
     try {
-      const r = await api.get('/products', { params: { search } });
+      const r = await api.get('/products');
       setProducts(r.data);
       setSelected(new Set());
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [search]);
+  useEffect(() => { load(); }, []);
+  useEffect(() => { setLimit(PAGE_SIZE); }, [search]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(p =>
+      (p.ProductName || '').toLowerCase().includes(q) || (p.Barcode || '').toLowerCase().includes(q));
+  }, [products, search]);
+  const visible = filtered.slice(0, limit);
 
   function openAdd()    { setForm(EMPTY); setModal('add'); setMsg(null); }
   function openEdit(p)  { setForm({ ...p }); setModal('edit'); setMsg(null); }
@@ -52,10 +70,10 @@ export default function ProductsPage() {
   }
 
   function toggleAll() {
-    if (selected.size === products.length) {
+    if (filtered.length > 0 && filtered.every(p => selected.has(p.ProductID))) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(products.map(p => p.ProductID)));
+      setSelected(new Set(filtered.map(p => p.ProductID)));
     }
   }
 
@@ -104,33 +122,54 @@ export default function ProductsPage() {
     Object.assign(document.createElement('a'), { href: url, download:'products.xlsx' }).click();
   }
 
+  // 匯入第一步：上傳檔案取得差異預覽，不會寫入資料庫
   async function importXlsx(e) {
     const file = e.target.files[0];
+    e.target.value = '';
     if (!file) return;
     const fd = new FormData();
     fd.append('file', file);
+    setImporting(true);
     try {
-      const res = await api.post('/products/import', fd);
+      const res = await api.post('/products/import/preview', fd);
+      const d = res.data;
+      setImportResult(null);
+      setPreview({ file, ...d });
+      setPreviewTab(d.changed.length ? 'changed' : d.created.length ? 'created' : 'errors');
+    } catch (err) {
+      alert(err.response?.data?.message || '讀取檔案失敗');
+    } finally { setImporting(false); }
+  }
+
+  // 匯入第二步：確認後只寫入新增與有變動的商品
+  async function applyImport() {
+    const fd = new FormData();
+    fd.append('file', preview.file);
+    setImporting(true);
+    try {
+      const res = await api.post('/products/import/apply', fd);
       setImportResult(res.data);
+      setPreview(null);
       load();
     } catch (err) {
       alert(err.response?.data?.message || '匯入失敗');
-    }
-    e.target.value = '';
+    } finally { setImporting(false); }
   }
 
   const canAdd    = hasPerm('product_add');
   const canEdit   = hasPerm('product_edit');
   const canDelete = hasPerm('product_delete');
-  const showOps   = canAdd || canEdit || canDelete;
-  const allChecked = products.length > 0 && selected.size === products.length;
+  const showOps   = true; // 出貨紀錄人人可看，操作欄固定顯示
+  const allChecked = filtered.length > 0 && filtered.every(p => selected.has(p.ProductID));
 
   return (
     <>
       <div className="page-header">
         <div>
           <div className="page-title">🏷️ 商品資料</div>
-          <div className="page-subtitle">共 {products.length} 項商品</div>
+          <div className="page-subtitle">
+            共 {products.length} 項商品{search.trim() && `，符合搜尋 ${filtered.length} 項`}
+          </div>
         </div>
         <div className="flex gap-8">
           {canDelete && selected.size > 0 && (
@@ -141,7 +180,9 @@ export default function ProductsPage() {
           <button className="btn btn-outline btn-sm" onClick={exportXlsx}>📤 匯出 Excel</button>
           {canAdd && (
             <>
-              <button className="btn btn-outline btn-sm" onClick={() => fileRef.current.click()}>📥 匯入 Excel</button>
+              <button className="btn btn-outline btn-sm" disabled={importing} onClick={() => fileRef.current.click()}>
+                {importing && !preview ? '讀取中...' : '📥 匯入 Excel'}
+              </button>
               <button className="btn btn-primary btn-sm" onClick={openAdd}>＋ 新增商品</button>
               <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={importXlsx} style={{display:'none'}} />
             </>
@@ -169,7 +210,7 @@ export default function ProductsPage() {
               value={search} onChange={e => setSearch(e.target.value)} style={{width:280, fontSize:15}} />
           </div>
           <div className="table-wrap">
-            {loading ? (
+            {loading && products.length === 0 ? (
               <div className="loading-center"><span className="spinner" /></div>
             ) : (
               <table>
@@ -190,16 +231,16 @@ export default function ProductsPage() {
                     <th className="text-right" style={{minWidth:80}}>庫存</th>
                     <th style={{minWidth:90}}>建立者</th>
                     <th style={{minWidth:90}}>修改者</th>
-                    {showOps && <th className="text-center" style={{minWidth:130}}>操作</th>}
+                    {showOps && <th className="text-center" style={{minWidth:220}}>操作</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {products.length === 0 && (
+                  {filtered.length === 0 && (
                     <tr><td colSpan={showOps ? (canDelete ? 11 : 10) : (canDelete ? 10 : 9)}>
-                      <div className="empty-state"><span className="icon">📦</span>暫無商品資料</div>
+                      <div className="empty-state"><span className="icon">📦</span>{products.length ? '找不到符合的商品' : '暫無商品資料'}</div>
                     </td></tr>
                   )}
-                  {products.map(p => (
+                  {visible.map(p => (
                     <tr key={p.ProductID} style={selected.has(p.ProductID) ? {background:'#eff6ff'} : undefined}>
                       {canDelete && (
                         <td style={{textAlign:'center'}}>
@@ -220,6 +261,7 @@ export default function ProductsPage() {
                       <td style={{color:'#666', fontSize:13}}>{p.UpdatedByName || '-'}</td>
                       {showOps && (
                         <td className="text-center">
+                          <button className="btn btn-ghost btn-sm" onClick={() => setHistoryOf(p)}>📜 出貨紀錄</button>
                           {canEdit   && <button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>✏️ 編輯</button>}
                           {canDelete && <button className="btn btn-ghost btn-sm" style={{color:'#e02424'}} onClick={() => del(p)}>🗑️ 刪除</button>}
                         </td>
@@ -230,8 +272,105 @@ export default function ProductsPage() {
               </table>
             )}
           </div>
+          {filtered.length > limit && (
+            <div style={{textAlign:'center', padding:12}}>
+              <button className="btn btn-outline btn-sm" onClick={() => setLimit(l => l + PAGE_SIZE)}>
+                顯示更多（還有 {filtered.length - limit} 項）
+              </button>
+            </div>
+          )}
         </div>
       </div>
+
+      {historyOf && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setHistoryOf(null)}>
+          <div className="modal" style={{maxWidth:1000, width:'95%'}}>
+            <div className="modal-header">
+              <span className="modal-title">📜 出貨紀錄：{historyOf.ProductName}{historyOf.Barcode ? `（${historyOf.Barcode}）` : ''}</span>
+              <button className="modal-close" onClick={() => setHistoryOf(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <ProductHistory productId={historyOf.ProductID} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {preview && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && !importing && setPreview(null)}>
+          <div className="modal" style={{maxWidth:900, width:'95%'}}>
+            <div className="modal-header">
+              <span className="modal-title">📥 匯入預覽：{preview.file.name}</span>
+              <button className="modal-close" disabled={importing} onClick={() => setPreview(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="flex gap-8" style={{flexWrap:'wrap', marginBottom:12}}>
+                {[
+                  ['changed', `✏️ 有修改 ${preview.changed.length}`, '#d97706'],
+                  ['created', `🆕 新增 ${preview.created.length}`, '#057a55'],
+                  ['errors',  `⚠️ 有問題 ${preview.errors.length}`, '#e02424'],
+                ].map(([k, label, color]) => (
+                  <button key={k} className="btn btn-sm" onClick={() => setPreviewTab(k)}
+                    style={{border:`1px solid ${color}`, background: previewTab === k ? color : '#fff', color: previewTab === k ? '#fff' : color}}>
+                    {label}
+                  </button>
+                ))}
+                <span style={{alignSelf:'center', color:'#6b7280', fontSize:13}}>完全相同自動跳過 {preview.unchanged} 筆</span>
+              </div>
+
+              <div style={{maxHeight:'55vh', overflowY:'auto'}}>
+                {previewTab === 'changed' && (preview.changed.length === 0 ? <div className="empty-state">沒有需要修改的商品</div> : (
+                  <table>
+                    <thead><tr><th>條碼</th><th>商品名稱</th><th>修改內容（原本 → 新的）</th></tr></thead>
+                    <tbody>
+                      {preview.changed.map(r => (
+                        <tr key={r.ProductID}>
+                          <td><code>{r.Barcode || '-'}</code></td>
+                          <td><b>{r.ProductName}</b></td>
+                          <td>
+                            {r.diffs.map(d => (
+                              <div key={d.field} style={{fontSize:13}}>
+                                <span style={{color:'#6b7280'}}>{d.label}：</span>
+                                <span style={{color:'#e02424', textDecoration:'line-through'}}>{showVal(d.from)}</span>
+                                {' → '}
+                                <span style={{color:'#057a55', fontWeight:700}}>{showVal(d.to)}</span>
+                              </div>
+                            ))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ))}
+                {previewTab === 'created' && (preview.created.length === 0 ? <div className="empty-state">沒有新商品</div> : (
+                  <table>
+                    <thead><tr><th>條碼</th><th>商品名稱</th><th>分類</th><th>單位</th><th className="text-right">進價</th><th className="text-right">售價</th><th className="text-right">庫存</th></tr></thead>
+                    <tbody>
+                      {preview.created.map(r => (
+                        <tr key={r.line}>
+                          <td><code>{r.Barcode || '-'}</code></td><td><b>{r.ProductName}</b></td><td>{r.Category || '-'}</td><td>{r.Unit}</td>
+                          <td className="text-right">{fmt(r.CostPrice)}</td><td className="text-right">{fmt(r.SalePrice)}</td><td className="text-right">{fmt(r.Stock)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ))}
+                {previewTab === 'errors' && (preview.errors.length === 0 ? <div className="empty-state">沒有問題</div> : (
+                  <ul style={{paddingLeft:18}}>{preview.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                ))}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-outline" disabled={importing} onClick={() => setPreview(null)}>取消</button>
+              <button className="btn btn-primary" disabled={importing || (preview.changed.length + preview.created.length === 0)} onClick={applyImport}>
+                {importing ? '匯入中...' : (preview.changed.length + preview.created.length === 0)
+                  ? '全部相同，不需匯入'
+                  : `✅ 確認匯入（修改 ${preview.changed.length}、新增 ${preview.created.length}）`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {modal && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && closeModal()}>

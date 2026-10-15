@@ -121,6 +121,11 @@ CREATE TABLE OrderItems (
 );
 GO
 
+-- 商品出貨紀錄查詢用
+IF NOT EXISTS (SELECT name FROM sys.indexes WHERE name = 'IX_OrderItems_ProductID')
+    CREATE INDEX IX_OrderItems_ProductID ON OrderItems(ProductID) INCLUDE (OrderID, Quantity, UnitPrice, Amount, Unit);
+GO
+
 
 -- ============================================
 -- 範例商品資料
