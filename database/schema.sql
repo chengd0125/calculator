@@ -228,6 +228,40 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('Products')
     ALTER TABLE Products ADD UpdatedBy INT NULL REFERENCES Employees(EmployeeID);
 GO
 
+-- ============================================
+-- 角色權限（管理員不受此表限制）
+-- ============================================
+IF OBJECT_ID('RolePermissions', 'U') IS NULL
+BEGIN
+    CREATE TABLE RolePermissions (
+        Role       NVARCHAR(20)  NOT NULL,
+        Permission NVARCHAR(50)  NOT NULL,
+        IsAllowed  BIT           NOT NULL DEFAULT 0,
+        CONSTRAINT PK_RolePermissions PRIMARY KEY (Role, Permission)
+    );
+END
+GO
+
+-- 補上缺少的預設權限（已存在的設定不會被覆蓋）
+INSERT INTO RolePermissions (Role, Permission, IsAllowed)
+SELECT d.Role, d.Permission, d.IsAllowed
+FROM (VALUES
+    ('sales', 'product_view', 1),  ('sales', 'product_add', 0),  ('sales', 'product_edit', 0),  ('sales', 'product_delete', 0),
+    ('sales', 'customer_view', 1), ('sales', 'customer_add', 1), ('sales', 'customer_edit', 1), ('sales', 'customer_delete', 0),
+    ('sales', 'order_view', 1),    ('sales', 'order_add', 1),    ('sales', 'order_edit', 1),    ('sales', 'order_delete', 0), ('sales', 'order_pick', 0),
+    ('warehouse', 'product_view', 1),  ('warehouse', 'product_add', 1),  ('warehouse', 'product_edit', 1),  ('warehouse', 'product_delete', 0),
+    ('warehouse', 'customer_view', 1), ('warehouse', 'customer_add', 0), ('warehouse', 'customer_edit', 0), ('warehouse', 'customer_delete', 0),
+    ('warehouse', 'order_view', 1),    ('warehouse', 'order_add', 0),    ('warehouse', 'order_edit', 0),    ('warehouse', 'order_delete', 0), ('warehouse', 'order_pick', 1)
+) AS d(Role, Permission, IsAllowed)
+WHERE NOT EXISTS (SELECT 1 FROM RolePermissions r WHERE r.Role = d.Role AND r.Permission = d.Permission);
+GO
+
+-- 全新資料庫建立預設管理員（admin / admin123，登入後請立刻改密碼）
+IF NOT EXISTS (SELECT 1 FROM Employees)
+    INSERT INTO Employees (Username, PasswordHash, FullName, Role)
+    VALUES ('admin', '$2a$10$y5ycnhBls6Jd7ZtwATQHVuKlEPK48w.4ocn9FZDGM7ZjY7XP9xUUy', N'系統管理員', 'admin');
+GO
+
 -- 新增退貨權限（業務預設開放開單，倉庫預設關閉）
 IF NOT EXISTS (SELECT 1 FROM RolePermissions WHERE Permission = 'return_add')
 BEGIN
