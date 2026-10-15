@@ -16,15 +16,15 @@ import SettingsPage     from './pages/SettingsPage.jsx';
 import { TOKEN_KEY, USER_KEY } from './storage.js';
 
 function isLoggedIn() {
-  const token = localStorage.getItem(TOKEN_KEY);
-  const user  = localStorage.getItem(USER_KEY);
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  const user  = sessionStorage.getItem(USER_KEY);
   if (!token || !user) return false;
   try { JSON.parse(user); return true; } catch { return false; }
 }
 
 function PrivateRoute({ children, roles }) {
   if (!isLoggedIn()) return <Navigate to="/login" replace />;
-  const user = JSON.parse(localStorage.getItem(USER_KEY));
+  const user = JSON.parse(sessionStorage.getItem(USER_KEY));
   if (roles && !roles.includes(user.role)) return <Navigate to="/" replace />;
   return children;
 }

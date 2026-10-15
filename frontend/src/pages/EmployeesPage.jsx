@@ -6,7 +6,7 @@ const EMPTY = { Username:'', Password:'', FullName:'', Role:'sales', Phone:'', I
 const ROLE_LABELS = { admin:'管理員', sales:'業務', warehouse:'倉庫' };
 
 export default function EmployeesPage() {
-  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
   const [list,    setList]    = useState([]);
   const [modal,   setModal]   = useState(null);
   const [form,    setForm]    = useState(EMPTY);

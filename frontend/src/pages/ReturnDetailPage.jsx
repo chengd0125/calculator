@@ -13,7 +13,7 @@ export default function ReturnDetailPage() {
   const { id }   = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const user     = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user     = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
 
   const [ret,       setRet]      = useState(null);
   const [loading,   setLoading]  = useState(true);

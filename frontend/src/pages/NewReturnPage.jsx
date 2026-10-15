@@ -9,7 +9,7 @@ let html5QrCode = null;
 
 export default function NewReturnPage() {
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
 
   const [customers,     setCustomers]    = useState([]);
   const [selectedCust,  setSelectedCust] = useState('');

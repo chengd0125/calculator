@@ -24,7 +24,7 @@ export default function ProductsPage() {
   const [perms,        setPerms]       = useState([]);
   const [selected,     setSelected]    = useState(new Set());
   const fileRef = useRef();
-  const user    = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user    = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
   const isAdmin = user.role === 'admin';
 
   const hasPerm = (p) => isAdmin || perms.includes(p);

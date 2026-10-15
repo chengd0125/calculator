@@ -15,7 +15,7 @@ export default function OrdersPage() {
   const [start,    setStart]    = useState('');
   const [end,      setEnd]      = useState('');
   const [loading,  setLoading]  = useState(false);
-  const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
 
   const load = async () => {
     setLoading(true);

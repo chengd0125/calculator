@@ -5,7 +5,7 @@ const api = axios.create({ baseURL: import.meta.env.VITE_API_URL ? `${import.met
 
 // 自動附加 JWT Token
 api.interceptors.request.use(cfg => {
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = sessionStorage.getItem(TOKEN_KEY);
   if (token) cfg.headers.Authorization = `Bearer ${token}`;
   // 多廠商：告訴後端這個網站屬於哪一間廠商（GitHub secret VITE_TENANT）
   if (import.meta.env.VITE_TENANT) cfg.headers['X-Tenant'] = import.meta.env.VITE_TENANT;
@@ -18,8 +18,8 @@ api.interceptors.response.use(
   err => {
     const isLoginRequest = err.config?.url?.includes('/auth/login');
     if (err.response?.status === 401 && !isLoginRequest) {
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(USER_KEY);
+      sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(USER_KEY);
       window.location.href = `${import.meta.env.BASE_URL}login`;
     }
     return Promise.reject(err);

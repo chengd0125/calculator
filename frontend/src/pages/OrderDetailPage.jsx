@@ -14,7 +14,7 @@ export default function OrderDetailPage() {
   const { id }   = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const user     = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user     = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
 
   const [order,      setOrder]      = useState(null);
   const [loading,    setLoading]    = useState(true);

@@ -14,8 +14,8 @@ export default function LoginPage() {
     setError(''); setLoading(true);
     try {
       const res = await api.post('/auth/login', form);
-      localStorage.setItem(TOKEN_KEY, res.data.token);
-      localStorage.setItem(USER_KEY,  JSON.stringify(res.data.user));
+      sessionStorage.setItem(TOKEN_KEY, res.data.token);
+      sessionStorage.setItem(USER_KEY,  JSON.stringify(res.data.user));
       navigate('/');
     } catch (err) {
       setError(err.response?.data?.message || '登入失敗，請稍後再試');

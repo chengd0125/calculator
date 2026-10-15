@@ -22,7 +22,7 @@ export default function Dashboard() {
           <div className="page-title">📊 儀表板</div>
           <div className="page-subtitle">
   {new Date().toLocaleDateString('zh-TW', {year:'numeric',month:'long',day:'numeric',weekday:'long'})}
-  {JSON.parse(localStorage.getItem(USER_KEY)||'{}').role === 'sales' && (
+  {JSON.parse(sessionStorage.getItem(USER_KEY)||'{}').role === 'sales' && (
     <span style={{marginLeft:12, color:'#1a56db', fontWeight:600}}>（僅顯示您的訂單）</span>
   )}
 </div>

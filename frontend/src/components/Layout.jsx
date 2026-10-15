@@ -8,7 +8,7 @@ const ROLE_LABELS = { admin: '管理員', sales: '業務', warehouse: '倉庫' }
 export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const user     = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+  const user     = JSON.parse(sessionStorage.getItem(USER_KEY) || '{}');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [canManageEmployees, setCanManageEmployees] = useState(user.role === 'admin');
 
@@ -27,8 +27,8 @@ export default function Layout() {
   }, [location]);
 
   function logout() {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
     navigate('/login');
   }
 

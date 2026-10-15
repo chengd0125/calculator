@@ -7,17 +7,17 @@ export function createBarcodeScannerConfig() {
   return {
     fps: 20,
     qrbox: (viewfinderWidth, viewfinderHeight) => ({
-      width: Math.min(viewfinderWidth, Math.max(220, Math.floor(Math.min(viewfinderWidth * 0.92, 720)))),
-      height: Math.min(viewfinderHeight, Math.max(100, Math.floor(Math.min(viewfinderHeight * 0.32, 240)))),
+      width: Math.min(viewfinderWidth, Math.max(220, Math.floor(Math.min(viewfinderWidth * 0.96, 960)))),
+      height: Math.min(viewfinderHeight, Math.max(140, Math.floor(Math.min(viewfinderHeight * 0.68, 480)))),
     }),
     ...(formats ? {
       formatsToSupport: [
+        formats.EAN_13,
         formats.CODABAR,
         formats.CODE_39,
         formats.CODE_93,
         formats.CODE_128,
         formats.EAN_8,
-        formats.EAN_13,
         formats.ITF,
         formats.UPC_A,
         formats.UPC_E,
