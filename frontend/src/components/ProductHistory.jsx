@@ -13,7 +13,7 @@ const custLabel = r => (r.CustomerCode ? `[${r.CustomerCode}] ` : '') + r.Compan
  * - compact：抄貨時使用，只顯示指定客戶最近幾筆，可一鍵帶入上次單價
  * - 一般模式：商品資料頁使用，可用下拉選單篩選客戶
  */
-export default function ProductHistory({ productId, customerId, compact = false, onUsePrice }) {
+export default function ProductHistory({ productId, customerId, compact = false, limit = 5, onUsePrice }) {
   const [rows,    setRows]    = useState([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
@@ -25,13 +25,13 @@ export default function ProductHistory({ productId, customerId, compact = false,
     setLoading(true);
     setError('');
     api.get(`/products/${productId}/history`, {
-      params: compact ? { customerId, limit: 5 } : { limit: 500 },
+      params: compact ? { customerId, limit } : { limit: 500 },
     })
       .then(r => { if (alive) setRows(r.data); })
       .catch(err => { if (alive) setError(err.response?.data?.message || '查詢失敗'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [productId, customerId, compact]);
+  }, [productId, customerId, compact, limit]);
 
   // 篩選選單只列出真的買過這個商品的客戶
   const customers = useMemo(() => {

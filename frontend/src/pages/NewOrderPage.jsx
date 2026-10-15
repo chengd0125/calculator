@@ -25,6 +25,7 @@ export default function NewOrderPage() {
   const [cameraOn,      setCameraOn]     = useState(false);
   const [cameraErr,     setCameraErr]    = useState('');
   const [showDropdown,  setShowDropdown] = useState(false);
+  const [historyIdx,    setHistoryIdx]   = useState(null); // 正在查看抄貨紀錄的明細列
 
   const barcodeRef  = useRef();
   const detectScan  = useBarcodeScanner();
@@ -342,10 +343,6 @@ export default function NewOrderPage() {
                   <button className="btn btn-success" onClick={addProduct}>✓ 確認加入明細</button>
                   <button className="btn btn-ghost" onClick={cancelProduct}>取消</button>
                 </div>
-                <div style={{marginTop:12, paddingTop:10, borderTop:'1px dashed #93c5fd'}}>
-                  <ProductHistory compact productId={selectedProduct.ProductID} customerId={selectedCust}
-                    onUsePrice={price => setPendingPrice(String(price))} />
-                </div>
               </div>
             </div>
           )}
@@ -387,7 +384,11 @@ export default function NewOrderPage() {
                 ) : (
                   items.map((item, idx) => (
                     <tr key={idx}>
-                      <td><b>{item.ProductName}</b></td>
+                      <td>
+                        <b>{item.ProductName}</b>
+                        <button type="button" className="btn btn-ghost btn-sm" style={{marginLeft:6}}
+                          onClick={() => setHistoryIdx(idx)} title="查看這位客戶以前抄過這個商品的紀錄">📜 紀錄</button>
+                      </td>
                       <td className="text-right">
                         <input className="qty-input" type="number" min="1" step="1" value={item.Quantity} onChange={e => updateQty(idx, e.target.value)} onBlur={() => normalizeQty(idx)} onFocus={e => e.target.select()} style={{width:60}} />
                       </td>
@@ -403,6 +404,24 @@ export default function NewOrderPage() {
             </table>
           </div>
         </div>
+
+        {historyIdx !== null && items[historyIdx] && (
+          <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setHistoryIdx(null)}>
+            <div className="modal" style={{maxWidth:640, width:'95%'}}>
+              <div className="modal-header">
+                <span className="modal-title">
+                  📜 {items[historyIdx].ProductName}
+                  {selectedCust && `｜${customers.find(c => String(c.CustomerID) === String(selectedCust))?.CompanyName || ''}`}
+                </span>
+                <button className="modal-close" onClick={() => setHistoryIdx(null)}>✕</button>
+              </div>
+              <div className="modal-body">
+                <ProductHistory compact limit={20} productId={items[historyIdx].ProductID} customerId={selectedCust}
+                  onUsePrice={price => { updatePrice(historyIdx, String(price)); setHistoryIdx(null); }} />
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="card" style={{marginTop:16}}>
           <div className="card-body">
