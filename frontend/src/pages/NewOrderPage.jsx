@@ -4,7 +4,7 @@ import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import ProductHistory from '../components/ProductHistory.jsx';
 import { USER_KEY } from '../storage.js';
-import { createBarcodeScannerConfig, improveCameraCapture } from '../cameraScanner.js';
+import { createCameraBarcodeScanner, improveCameraCapture } from '../cameraScanner.js';
 
 let html5QrCode = null;
 
@@ -38,9 +38,8 @@ export default function NewOrderPage() {
   useEffect(() => {
     api.get('/customers').then(r => setCustomers(r.data));
     return () => {
-      if (html5QrCode && html5QrCode.isScanning) {
-        html5QrCode.stop().catch(console.error);
-      }
+      if (html5QrCode) html5QrCode.stop().catch(console.error);
+      html5QrCode = null;
     };
   }, []);
 
@@ -191,50 +190,38 @@ export default function NewOrderPage() {
 
   async function startCamera() {
     setCameraErr('');
-    if (typeof Html5Qrcode === 'undefined') {
-      setCameraErr("錯誤：掃描套件尚未載入，請檢查網路或重整頁面。");
-      return;
-    }
     try {
       if (!html5QrCode) {
-        html5QrCode = new Html5Qrcode("reader");
+        html5QrCode = await createCameraBarcodeScanner(
+          document.getElementById('reader-video'),
+          async (decodedText) => {
+            setBarcode(decodedText);
+            setMsg({ type:'info', text: `已讀取條碼：${decodedText}` });
+
+            try {
+              const res = await api.get('/products/search', { params: { q: decodedText } });
+              if (res.data.length === 1) {
+                selectProduct(res.data[0]);
+              } else if (res.data.length > 1) {
+                setSearchResults(res.data);
+                setShowDropdown(true);
+              } else {
+                setMsg({ type:'error', text: `❌ 掃到條碼 ${decodedText}，但資料庫中找不到此商品` });
+                setTimeout(() => {
+                  setMsg(null);
+                  html5QrCode?.resume();
+                }, 1500);
+              }
+            } catch (error) {
+              console.error(error);
+              setMsg({ type:'error', text: '搜尋商品時發生錯誤' });
+              setTimeout(() => html5QrCode?.resume(), 1500);
+            }
+          },
+        );
       }
       setCameraOn(true); // 先開啟容器顯示
-      
-      await html5QrCode.start(
-        { facingMode: "environment" }, 
-        createBarcodeScannerConfig(),
-        async (decodedText) => {
-          // 1. 只要掃到，立即填入輸入框並提示
-          setBarcode(decodedText);
-          setMsg({ type:'info', text: `已讀取條碼：${decodedText}` });
-          
-          try {
-            // 2. 搜尋商品
-            const res = await api.get('/products/search', { params: { q: decodedText } });
-            
-            if (res.data.length === 1) {
-              // 找到單一商品後，交由使用者輸入數量與價格再確認加入
-              selectProduct(res.data[0]);
-              // 暫停掃描，避免在確認前讀到下一筆條碼
-              if (html5QrCode) {
-                html5QrCode.pause();
-              }
-            } else if (res.data.length > 1) {
-              // 找到多筆，顯示下拉選單
-              setSearchResults(res.data);
-              setShowDropdown(true);
-            } else {
-              // 沒找到商品
-              setMsg({ type:'error', text: `❌ 掃到條碼 ${decodedText}，但資料庫中找不到此商品` });
-              setTimeout(() => setMsg(null), 3500);
-            }
-          } catch (e) { 
-            console.error(e);
-            setMsg({ type:'error', text: '搜尋商品時發生錯誤' });
-          }
-        }
-      );
+      await html5QrCode.start();
       await improveCameraCapture(html5QrCode);
     } catch (err) {
       setCameraErr("無法開啟相機：" + err);
@@ -357,7 +344,9 @@ export default function NewOrderPage() {
             border: '2px solid #1a56db',
             background: '#000',
             minHeight: '250px'
-          }}></div>
+          }}>
+            <video id="reader-video" autoPlay muted playsInline style={{width:'100%', maxHeight:'55vh', objectFit:'contain', display:'block'}} />
+          </div>
 
           {msg && <div className={`alert alert-${msg.type}`} style={{marginTop:8}}>{msg.text}</div>}
         </div>

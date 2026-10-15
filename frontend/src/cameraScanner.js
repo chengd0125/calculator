@@ -1,56 +1,93 @@
-// Configuration shared by the order and return camera scanners.
-// The viewfinder is sized from the actual mobile preview so it also works
-// when the camera feed is narrower than a desktop screen.
-export function createBarcodeScannerConfig() {
-  const formats = window.Html5QrcodeSupportedFormats;
+// Taiwan retail products are predominantly EAN-13. Keeping the decoder focused
+// on common linear product codes reduces work per frame; TRY_HARDER also asks
+// ZXing to inspect more scan lines and try a rotated image when needed.
+export async function createCameraBarcodeScanner(video, onDecoded) {
+  // Load the decoder only when a user opens the camera, keeping the normal app
+  // startup bundle small for staff who use a hardware scanner or type instead.
+  const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] = await Promise.all([
+    import('@zxing/browser'),
+    import('@zxing/library'),
+  ]);
+  const hints = new Map([
+    [DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.CODE_93,
+      BarcodeFormat.ITF,
+      BarcodeFormat.CODABAR,
+      BarcodeFormat.UPC_EAN_EXTENSION,
+    ]],
+    [DecodeHintType.TRY_HARDER, true],
+  ]);
+  const reader = new BrowserMultiFormatReader(hints, {
+    delayBetweenScanAttempts: 120,
+    delayBetweenScanSuccess: 500,
+    tryPlayVideoTimeout: 10000,
+  });
 
-  return {
-    fps: 20,
-    // Leave qrbox unset so the decoder examines the full camera preview;
-    // this avoids missing a barcode when the phone or label is turned.
-    ...(formats ? {
-      formatsToSupport: [
-        formats.EAN_13,
-        formats.CODABAR,
-        formats.CODE_39,
-        formats.CODE_93,
-        formats.CODE_128,
-        formats.EAN_8,
-        formats.ITF,
-        formats.UPC_A,
-        formats.UPC_E,
-        formats.UPC_EAN_EXTENSION,
-      ].filter(format => format !== undefined),
-    } : {}),
+  let controls = null;
+  let paused = false;
+  let starting = false;
+
+  const scanner = {
+    get isScanning() { return Boolean(controls); },
+    async start() {
+      if (controls || starting) return;
+      starting = true;
+      paused = false;
+      try {
+        controls = await reader.decodeFromConstraints({
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        }, video, (result) => {
+          if (!result || paused) return;
+          paused = true; // one decode at a time; prevents repeated API lookups
+          Promise.resolve(onDecoded(result.getText(), scanner)).catch((error) => {
+            console.error('Barcode handling failed:', error);
+            scanner.resume();
+          });
+        });
+        video.setAttribute('playsinline', 'true');
+        video.muted = true;
+      } finally {
+        starting = false;
+      }
+    },
+    pause() { paused = true; },
+    resume() { if (controls) paused = false; },
+    async stop() {
+      paused = true;
+      const activeControls = controls;
+      controls = null;
+      activeControls?.stop();
+      video.pause();
+      video.srcObject?.getTracks().forEach(track => track.stop());
+      video.srcObject = null;
+    },
+    getTrack() { return video.srcObject?.getVideoTracks?.()[0] || null; },
   };
+
+  return scanner;
 }
 
-// Ask the active phone camera for more detail and continuous focus when the
-// browser exposes those controls. Older browsers simply keep their defaults.
+// Request continuous autofocus only when the active phone exposes the control.
+// Avoid forced digital zoom: it can crop the barcode or make a close label blur.
 export async function improveCameraCapture(scanner) {
   try {
-    const capabilities = scanner.getRunningTrackCapabilities?.();
-    const constraints = {
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    };
-
-    if (capabilities?.focusMode?.includes?.('continuous')) {
-      constraints.advanced = [{ focusMode: 'continuous' }];
+    const track = scanner.getTrack?.();
+    const focusModes = track?.getCapabilities?.().focusMode;
+    if (focusModes?.includes?.('continuous')) {
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
     }
-
-    await scanner.applyVideoConstraints?.(constraints);
   } catch {
-    // Higher resolution or continuous focus is optional and device-dependent.
-  }
-
-  try {
-    const zoom = scanner.getRunningTrackCameraCapabilities?.().zoomFeature();
-    if (!zoom?.isSupported()) return;
-
-    const targetZoom = Math.min(zoom.max(), Math.max(zoom.min(), 2));
-    if (targetZoom > (zoom.value() || 1)) await zoom.apply(targetZoom);
-  } catch {
-    // Keep scanning at the camera's default zoom when zoom cannot be applied.
+    // Autofocus constraints differ across browsers and camera hardware.
   }
 }

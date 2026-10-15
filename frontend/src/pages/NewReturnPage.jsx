@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import { USER_KEY } from '../storage.js';
-import { createBarcodeScannerConfig, improveCameraCapture } from '../cameraScanner.js';
+import { createCameraBarcodeScanner, improveCameraCapture } from '../cameraScanner.js';
 
 let html5QrCode = null;
 
@@ -34,7 +34,8 @@ export default function NewReturnPage() {
   useEffect(() => {
     api.get('/customers').then(r => setCustomers(r.data));
     return () => {
-      if (html5QrCode && html5QrCode.isScanning) html5QrCode.stop().catch(console.error);
+      if (html5QrCode) html5QrCode.stop().catch(console.error);
+      html5QrCode = null;
     };
   }, []);
 
@@ -163,29 +164,35 @@ export default function NewReturnPage() {
 
   async function startCamera() {
     setCameraErr('');
-    if (typeof Html5Qrcode === 'undefined') { setCameraErr('錯誤：掃描套件尚未載入'); return; }
     try {
-      if (!html5QrCode) html5QrCode = new Html5Qrcode('reader-return');
-      setCameraOn(true);
-      await html5QrCode.start(
-        { facingMode: 'environment' },
-        createBarcodeScannerConfig(),
-        async (decodedText) => {
-          setBarcode(decodedText);
-          try {
-            const res = await api.get('/products/search', { params: { q: decodedText } });
-            if (res.data.length === 1) {
-              selectProduct(res.data[0]);
-              if (html5QrCode) html5QrCode.pause();
-            } else if (res.data.length > 1) {
-              setSearchResults(res.data); setShowDropdown(true);
-            } else {
-              setMsg({ type:'error', text:`❌ 條碼 ${decodedText} 找不到商品` });
-              setTimeout(() => setMsg(null), 3500);
+      if (!html5QrCode) {
+        html5QrCode = await createCameraBarcodeScanner(
+          document.getElementById('reader-return-video'),
+          async (decodedText) => {
+            setBarcode(decodedText);
+            try {
+              const res = await api.get('/products/search', { params: { q: decodedText } });
+              if (res.data.length === 1) {
+                selectProduct(res.data[0]);
+              } else if (res.data.length > 1) {
+                setSearchResults(res.data);
+                setShowDropdown(true);
+              } else {
+                setMsg({ type:'error', text:`❌ 條碼 ${decodedText} 找不到商品` });
+                setTimeout(() => {
+                  setMsg(null);
+                  html5QrCode?.resume();
+                }, 1500);
+              }
+            } catch {
+              setMsg({ type:'error', text:'搜尋商品時發生錯誤' });
+              setTimeout(() => html5QrCode?.resume(), 1500);
             }
-          } catch {}
-        }
-      );
+          },
+        );
+      }
+      setCameraOn(true);
+      await html5QrCode.start();
       await improveCameraCapture(html5QrCode);
     } catch (err) { setCameraErr('無法開啟相機：' + err); setCameraOn(false); }
   }
@@ -277,7 +284,9 @@ export default function NewReturnPage() {
             </div>
           )}
           {cameraErr && <div className="alert alert-error" style={{marginTop:8}}>{cameraErr}</div>}
-          <div id="reader-return" style={{width:'100%', maxWidth:450, margin:'15px auto', display: cameraOn ? 'block' : 'none', borderRadius:12, overflow:'hidden', border:'2px solid #d97706', background:'#000', minHeight:250}}></div>
+          <div id="reader-return" style={{width:'100%', maxWidth:450, margin:'15px auto', display: cameraOn ? 'block' : 'none', borderRadius:12, overflow:'hidden', border:'2px solid #d97706', background:'#000', minHeight:250}}>
+            <video id="reader-return-video" autoPlay muted playsInline style={{width:'100%', maxHeight:'55vh', objectFit:'contain', display:'block'}} />
+          </div>
           {msg && <div className={`alert alert-${msg.type}`} style={{marginTop:8}}>{msg.text}</div>}
         </div>
 

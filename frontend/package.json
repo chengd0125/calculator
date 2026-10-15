@@ -8,10 +8,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
+    "axios": "^1.6.7",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
-    "axios": "^1.6.7"
+    "react-router-dom": "^6.22.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
