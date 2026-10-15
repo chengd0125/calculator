@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import { USER_KEY } from '../storage.js';
+import { createBarcodeScannerConfig } from '../cameraScanner.js';
 
 let html5QrCode = null;
 
@@ -168,7 +169,7 @@ export default function NewReturnPage() {
       setCameraOn(true);
       await html5QrCode.start(
         { facingMode: 'environment' },
-        { fps: 15, qrbox: { width: 320, height: 200 }, aspectRatio: 1.0 },
+        createBarcodeScannerConfig(),
         async (decodedText) => {
           setBarcode(decodedText);
           try {

@@ -4,6 +4,7 @@ import api from '../api.js';
 import useBarcodeScanner, { useScanMode, scanInputProps } from '../hooks/useBarcodeScanner.js';
 import ProductHistory from '../components/ProductHistory.jsx';
 import { USER_KEY } from '../storage.js';
+import { createBarcodeScannerConfig } from '../cameraScanner.js';
 
 let html5QrCode = null;
 
@@ -200,15 +201,9 @@ export default function NewOrderPage() {
       }
       setCameraOn(true); // 先開啟容器顯示
       
-      const config = { 
-        fps: 15, 
-        qrbox: { width: 320, height: 200 }, // 擴大掃描框，更適合長條碼
-        aspectRatio: 1.0
-      };
-
       await html5QrCode.start(
         { facingMode: "environment" }, 
-        config,
+        createBarcodeScannerConfig(),
         async (decodedText) => {
           // 1. 只要掃到，立即填入輸入框並提示
           setBarcode(decodedText);
